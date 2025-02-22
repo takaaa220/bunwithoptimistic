@@ -1,7 +1,11 @@
 package linter
 
 import (
+	"bytes"
 	"go/ast"
+	"go/printer"
+	"go/types"
+	"log"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
@@ -30,21 +34,70 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	inspector.Preorder(nodeFilter, func(n ast.Node) {
 		call := n.(*ast.CallExpr)
 
-		// Check if it's an Exec(ctx) call
-		if !isExecCall(call) {
+		// Check if it's a method call
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
 			return
 		}
 
-		// Check if the method chain starts with NewUpdate()
-		chain := extractMethodChain(call.Fun)
-		if !startsWithNewUpdate(chain) {
+		// Check if the method is "Exec"
+		if sel.Sel.Name != "Exec" {
 			return
 		}
 
-		// Check if the query is wrapped with WithOptimistic
-		if !isWrappedWithOptimistic(chain) {
-			pass.Reportf(call.Pos(), "bun Update query must be wrapped with WithOptimistic")
+		// Get the type information of the receiver
+		recvType := pass.TypesInfo.Types[sel.X].Type
+		if recvType == nil {
+			return
 		}
+
+		// Check if the type is *bun.UpdateQuery
+		ptr, ok := recvType.(*types.Pointer)
+		if !ok {
+			return
+		}
+
+		named, ok := ptr.Elem().(*types.Named)
+		if !ok {
+			return
+		}
+
+		if named.Obj().Pkg().Path() != "github.com/uptrace/bun" || named.Obj().Name() != "UpdateQuery" {
+			return
+		}
+
+		// Report diagnostic with suggested fix
+		pass.Report(analysis.Diagnostic{
+			Pos:     call.Pos(),
+			Message: "bun.UpdateQuery must wrap with bunwithoptimistic.WithOptimistic",
+			SuggestedFixes: []analysis.SuggestedFix{
+				{
+					Message: "Wrap with bunwithoptimistic.WithOptimistic",
+					TextEdits: []analysis.TextEdit{
+						{
+							Pos: sel.X.Pos(),
+							End: sel.X.End(),
+							NewText: func() []byte {
+								var buf bytes.Buffer
+								x := &ast.CallExpr{
+									Fun: &ast.SelectorExpr{
+										X:   ast.NewIdent("bunwithoptimistic"),
+										Sel: ast.NewIdent("WithOptimistic"),
+									},
+									Args: []ast.Expr{
+										sel.X,
+									},
+								}
+								if err := printer.Fprint(&buf, pass.Fset, x); err != nil {
+									log.Fatalf("failed to print AST node: %v", err)
+								}
+								return buf.Bytes()
+							}(),
+						},
+					},
+				},
+			},
+		})
 	})
 
 	return nil, nil

@@ -14,8 +14,7 @@ type User struct {
 }
 
 func badUpdate(ctx context.Context, db *bun.DB, user *User) (sql.Result, error) {
-	// want "bun Update query must be wrapped with WithOptimistic"
-	return db.NewUpdate().Model(user).Exec(ctx)
+	return db.NewUpdate().Model(user).Exec(ctx) // want "bun Update query must be wrapped with WithOptimistic"
 }
 
 // goodUpdate demonstrates the correct usage with WithOptimistic
